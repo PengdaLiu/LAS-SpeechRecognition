@@ -4,24 +4,26 @@ import numpy as np
 from utils.general_utils import get_minibatches
 import load_data as ld
 import time
+
+EOS = 32
+
 class Config:#Several +drop out
 	n_classes = 33
-	batch_size = 160
+	batch_size = 100
 	#U = 16   
-	n_mfcc = 80
+	n_mfcc = 60#Must be 4 times pblstm_hidden
+	pblstm_hidden = 15
 	n_features = 40
-	pblstm_hidden = 20
-	aslstm_state =  5
-	hidden_atten1 = 6
-	hidden_atten2 = 6
-	hidden_dist= 8
-	context_final = 6
+	aslstm_state =  100
+	hidden_atten1 = 100
+	hidden_atten2 = 100
+	hidden_dist= 100
+	context_final = 100
 	model_output= "model_weights"
 	#max_time = 128
 	#timestep = 82
-	n_epochs = 40
-	drop = 0.95
-	lr = 5e-2 
+	n_epochs = 100
+	lr = 1e-3 
 
 	def __init__(self, timestep=82, max_time=128):
 		self.timestep=timestep
@@ -59,9 +61,10 @@ class LASmodel(Model):
 			shape=[None, self.config.max_time, self.config.n_features])
 		self.labels_placeholder =tf.placeholder(tf.int32, shape=[None, self.config.timestep])
 		self.seq_len_placeholder = tf.placeholder(tf.int32, shape=[None,])
+		self.mask_placeholder=tf.placeholder(tf.bool,shape=[None,self.config.timestep])
 
-	def create_feed_dict(self, inputs_batch, labels_batch=None,seq_batch=None):
-		feed_dict={self.input_placeholder:inputs_batch, self.labels_placeholder:labels_batch,self.seq_len_placeholder:seq_batch}
+	def create_feed_dict(self, inputs_batch, labels_batch=None,seq_batch=None,mask_batch=None):
+		feed_dict={self.input_placeholder:inputs_batch, self.labels_placeholder:labels_batch,self.seq_len_placeholder:seq_batch,self.mask_placeholder : mask_batch}
 		return feed_dict
 
 	def attentioncontext(self,si,h,w1,b1,w2,b2,w11,b11,w22,b22):
@@ -107,17 +110,17 @@ class LASmodel(Model):
 		outputs_l1, state_l1 = tf.nn.bidirectional_dynamic_rnn(fcell_l1, bcell_l1, self.input_placeholder, \
 			dtype=tf.float32	, sequence_length=self.seq_len_placeholder, scope="L1")
    	# concat outputs_l1
-		outputs_l1 = tf.reshape(tf.concat(2, tf.nn.dropout(outputs_l1, self.config.drop)), [-1, max_time / 2, hidden_size * 4])
+		outputs_l1 = tf.reshape(tf.concat(2, outputs_l1), [-1, max_time / 2, hidden_size * 4])
 
 		outputs_l2, state_l2 = tf.nn.bidirectional_dynamic_rnn(fcell_l2, bcell_l2, outputs_l1, \
 			dtype=tf.float32	, sequence_length=self.seq_len_placeholder / 2, scope="L2")
 	# concat outputs_l2
-		outputs_l2 = tf.reshape(tf.concat(2, tf.nn.dropout(outputs_l2, self.config.drop)), [-1, max_time / 4, hidden_size * 4])
+		outputs_l2 = tf.reshape(tf.concat(2, outputs_l2), [-1, max_time / 4, hidden_size * 4])
 
 		outputs_l3, state_l3 = tf.nn.bidirectional_dynamic_rnn(fcell_l3, bcell_l3, outputs_l2, \
 			dtype=tf.float32	, sequence_length=self.seq_len_placeholder / 4, scope="L3")
 		# concat'ed outputs_l3
-		h= tf.reshape(tf.concat(2, tf.nn.dropout(outputs_l3, self.config.drop)), [-1, max_time / 8, hidden_size * 4])
+		h= tf.reshape(tf.concat(2, outputs_l3), [-1, max_time / 8, hidden_size * 4])
 		initial_s = output = tf.zeros([tf.shape(self.input_placeholder)[0],self.config.aslstm_state], tf.float32)
 		c=self.attentioncontext(output,h,w1_atten,b1_atten,w2_atten,b2_atten,w11_atten,b11_atten,w22_atten,b22_atten)
 		
@@ -125,7 +128,8 @@ class LASmodel(Model):
 			if i > 0: tf.get_variable_scope().reuse_variables()
 			r=np.random.binomial(1,0.9)
 			r=tf.constant(r,dtype=tf.float32)
-			random_sample=tf.reshape(preds[i],[-1,self.config.n_classes])*r+(1-r)*tf.one_hot(self.labels_placeholder[:,i], self.config.n_classes, axis=-1,dtype=tf.float32)
+			r=0
+			random_sample=tf.reshape(tf.nn.softmax(preds[i]),[-1,self.config.n_classes])*r+(1-r)*tf.one_hot(self.labels_placeholder[:,i], self.config.n_classes, axis=-1,dtype=tf.float32)
 			concatenated=tf.concat(1,[random_sample,c]) 
 			output, state = stacked_lstm(concatenated, state)
 			c = self.attentioncontext(output, h, w1_atten,b1_atten,w2_atten,b2_atten,w11_atten,b11_atten,w22_atten,b22_atten)
@@ -134,6 +138,18 @@ class LASmodel(Model):
 		preds = tf.pack(preds, 1)		
 		return preds
 	
+	def add_correct(self,preds):
+		predictions =tf.argmax(preds, axis=2)
+		num_correct=self.tf_count(tf.boolean_mask(tf.cast(predictions,tf.int32)-self.labels_placeholder,self.mask_placeholder),0);
+		a=tf.ones(tf.shape(self.mask_placeholder),tf.float32)
+		return num_correct/tf.reduce_sum(tf.boolean_mask(a,self.mask_placeholder));
+	
+	def tf_count(self,t, val):
+		elements_equal_to_value = tf.equal(t, val)
+		as_ints = tf.cast(elements_equal_to_value, tf.float32)
+		count = tf.reduce_sum(as_ints)
+		return count
+
 	def add_loss_op(self, preds):
 		loss=0.0
 		'''
@@ -145,21 +161,20 @@ class LASmodel(Model):
 		return -loss
 		'''
 		loss=tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels_placeholder, logits=preds)
-		loss=tf.reduce_sum(loss,axis=1)
-		loss = tf.reduce_mean(loss)
+		loss = tf.reduce_mean(tf.boolean_mask(loss,self.mask_placeholder))
 		return loss
 
 	def add_training_op(self, loss):
 		#opt=tf.train.GradientDescentOptimizer(learning_rate=self.config.lr)
-		opt = tf.train.MomentumOptimizer(self.config.lr, 0.98)
-		train_op=opt.minimize(loss)
+		opt = tf.train.AdamOptimizer(self.config.lr)
+		train_op=opt.minimize(loss,)
 		return train_op
 		
 	def __init__(self, config):
 		self.config=config
 		self.build()
 	
-	def run_epoch(self, sess, inputs, labels,seqs):
+	def run_epoch(self, sess, inputs, labels,seqs,mask):
 		"""Runs an epoch of training.
 
 		Args:
@@ -169,17 +184,22 @@ class LASmodel(Model):
 		Returns:
 			average_loss: scalar. Average minibatch loss of model on epoch.
 		"""
-		n_minibatches, total_loss = 0, 0
-		for input_batch, labels_batch ,seq_batch in get_minibatches([inputs, labels,seqs], self.config.batch_size):
+		correct,n_minibatches, total_loss = 0.0,0.0,0.0
+		for input_batch, labels_batch ,seq_batch ,mask_batch in get_minibatches([inputs, labels,seqs,mask], self.config.batch_size):
 			n_minibatches += 1
-			total_loss += self.train_on_batch(sess, input_batch, labels_batch,seq_batch)
-		return total_loss / n_minibatches
-	
-    #deleted 03/15 GZ
-    #def run_test(self,sess,inputs,labels,seqs):
-        #return self.test_on_batch(sess,inputs,labels,seqs)
+			batchcorrect,batchloss= self.train_on_batch(sess, input_batch, labels_batch,seq_batch,mask_batch)
+			total_loss+=batchloss
+			correct+=batchcorrect
+		return total_loss / n_minibatches, correct/n_minibatches
 
-	def fit(self, saver,sess, inputs, labels,seqs):
+
+
+
+	def run_test(self,sess,inputs,labels,seqs,mask):
+		return self.test_model(sess,inputs,labels,seqs,mask)
+
+
+	def fit(self, saver,sess, inputs, labels,seqs,mask):
 		"""Fit model on provided data.
 
 		Args:
@@ -192,33 +212,43 @@ class LASmodel(Model):
 		losses = []
 		for epoch in range(self.config.n_epochs):
 			start_time = time.time()
-			average_loss = self.run_epoch(sess, inputs, labels,seqs)
+			average_loss,correct_rate = self.run_epoch(sess, inputs, labels,seqs,mask)
 			duration = time.time() - start_time
-			print 'Epoch {:}: loss = {:.2f} ({:.3f} sec)'.format(epoch, average_loss, duration)
+			print 'Epoch {:}: loss = {:.2f} correct rate={:.2f} ({:.3f} sec)'.format(epoch, average_loss,correct_rate ,duration)
 			losses.append(average_loss)
 		return losses
 
-def test_LAS_model():
-	train, test, max_time, max_chars = ld.load_data("data_mel.npz")
-	# voxforge/ae-20100821-aov/wav/a0351.wav: IT WAS MORE LIKE SUGAR.
-    # voxforge/aaa-20150128-fak/wav/a0557.wav: THE LAST REFUGEE HAD PASSED.
-	inputs=np.log(train[0] + 0.00001)
+def to_mask(data, thresh):
+	m=np.shape(data)[0]
+	n=np.shape(data)[1]
+	mask=np.zeros(np.shape(data))
+	for i in range (m):
+		ind=True
+		for j in range (n):
+			mask[i][j]=ind
+			if data[i][j] == thresh:
+				ind=False
+	return np.bool_(mask)
+
+def  test_LAS_model():
+	train, test, max_time, max_chars = ld.load_data("../Data/data_nml.npz", new_format=False)
+	inputs=train[0]
 	labels=train[1]
+	mask_train=to_mask(labels,EOS)
 	seqs=train[2]
-	test_inputs=np.log(test[0] + 0.00001)
+	test_inputs=test[0]
 	test_labels=test[1]
 	test_seqs=test[2]##For loop tune hyper
+	mask_test=to_mask(test_labels,EOS)
 	config=Config(max_time = max_time, timestep = max_chars + 2)
-    #"""
 	with tf.Graph().as_default():
 		model = LASmodel(config)
 		init = tf.global_variables_initializer()
 		saver=tf.train.Saver()
 		with tf.Session() as sess:
 			sess.run(init)
-			losses = model.fit(saver,sess, inputs, labels,seqs)
+			losses = model.fit(saver,sess, inputs, labels,seqs,mask_train)
 			saver.save(sess, model.config.model_output)
-    #"""
 	with tf.Graph().as_default():
 		model=LASmodel(config)
 		saver = tf.train.Saver()
@@ -227,22 +257,10 @@ def test_LAS_model():
 			session.run(init)
 			new_saver = tf.train.import_meta_graph(model.config.model_output+'.meta')
 			new_saver.restore(session, tf.train.latest_checkpoint('./'))
-            # modified 03/15 GZ, also model.py:test_on_batch, pred_on_batch
-			"""
-			start_time = time.time()
-			loss= model.test_on_batch(session, test_inputs, test_labels, test_seqs)
-			duration = time.time() - start_time
-			print 'Test loss = {:.2f} ({:.3f} sec)'.format(loss, duration)
-            # new stuff 03/15 GZ
-			"""
-			start_time = time.time()
-			pred = model.predict_on_batch(session, test_inputs[:10], test_labels[:10], test_seqs[:10])
-			duration = time.time() - start_time
-			print 'Predictions below: ({:.3f} sec)'.format(duration)
-	 		print pred[0]
-	 		print pred[0].shape
-	 		np.savez("samples", pred=pred)
-            #"""
+			loss= model.run_test(session,test_inputs,test_labels,test_seqs,mask_test)
+	 		print "Test loss:"
+	 		print loss
+
 
 if __name__ == "__main__":
 	test_LAS_model()

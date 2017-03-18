@@ -7,6 +7,34 @@ CODE = {'A': 1, 'C': 3, 'B': 2, 'E': 5, 'D': 4, 'G': 7, 'F': 6, 'I': 9, 'H': 8, 
         'L': 12, 'O': 15, 'N': 14, 'Q': 17, 'P': 16, 'S': 19, 'R': 18, 'U': 21, 'T': 20, 'W': 23, 'V': 22, \
         'Y': 25, 'X': 24, 'Z': 26, ' ': 27}
 
+def nml_data(f, old_format=False):
+    def nml(trd, trs):
+        ntrd=np.zeros(trd.shape)
+        for i in range(len(trs)):
+            tmp=trd[i,:trs[i],:]
+            mean_scale = np.mean(tmp, axis=0)
+            std_scale = np.std(tmp, axis=0)
+            ntrd[i,:trs[i],:] = (tmp-mean_scale[np.newaxis,:])/std_scale[np.newaxis,:]
+        return ntrd
+    dt=np.load(f)
+    trd=dt["train_data"]
+    trl=dt["train_labels"]
+    trs=dt["train_seq_len"]
+    mt=dt["max_time"]
+    mc=dt["max_chars"]
+    if old_format:
+        tsd=dt["test_data"]
+        tsl=dt["test_labels"]
+        tss=dt["test_seq_len"]
+        np.savez(f[:-4]+"_nml"+f[-4:], train_data=nml(trd, trs), train_labels=trl, train_seq_len=trs, \
+                test_data=nml(tsd, tss), test_labels=trl, test_seq_len=tss, \
+                max_time=mt, max_chars=mc)
+        return
+    trl[trl==32]=28
+    np.savez(f[:-4]+"_nml"+f[-4:], train_data=nml(trd, trs), train_labels=trl, train_seq_len=trs, \
+            max_time=mt, max_chars=mc)
+
+
 def shuffle_data(f1="data_b0.npz", f2="data_b7.npz"):
     print "[INFO] Loading data ..."
     d1 = np.load(f1)

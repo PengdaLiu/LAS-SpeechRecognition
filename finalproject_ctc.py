@@ -19,14 +19,19 @@ class Config:#Several +drop out
     model_output= "model_weights"
     #max_time = 128
     #timestep = 82
-    n_epochs = 160
+    n_epochs = 360
     drop = 0.9
-    lr = 4e-3 
+    lr = 2e-3 
 
     def __init__(self, timestep=82, max_time=128):
         self.timestep=timestep
         self.max_time=max_time
         self.U=max_time/8
+
+"""
+def create_mask(sequence, timestep):
+    return [s.index(s[-1]) * [True] + (timestep - s.index(s[-1])) * [False]]
+"""
 
 def sparse_tuple_from(sequences, dtype=np.int32):
     """Create a sparse representention of x.
@@ -82,9 +87,11 @@ class LASmodel(Model):
         self.lb_placeholder =tf.sparse_placeholder(tf.int32)
         #self.labels_placeholder =tf.placeholder(tf.int32, shape=[None, self.config.timestep])
         self.seq_len_placeholder = tf.placeholder(tf.int32, shape=[None,])
+        self.mask_placeholder = tf.placeholder(tf.bool, shape=[None, self.config.timestep])
 
     def create_feed_dict(self, inputs_batch, labels_batch=None,seq_batch=None):
-        feed_dict={self.input_placeholder:inputs_batch, self.seq_len_placeholder:seq_batch, self.lb_placeholder:labels_batch}#,self.labels_placeholder:labels_batch}
+        feed_dict={self.input_placeholder:inputs_batch, self.seq_len_placeholder:seq_batch, \
+                self.lb_placeholder:labels_batch}#,self.labels_placeholder:labels_batch}
         return feed_dict
 
     def attentioncontext(self,si,h,w1,b1,w2,b2,w11,b11,w22,b22):
@@ -169,7 +176,7 @@ class LASmodel(Model):
         preds_t = tf.transpose(preds, (1,0,2))
         decoded, log_prob = tf.nn.ctc_beam_search_decoder(inputs=preds_t, sequence_length=self.seq_len_placeholder / 8)
         #decoded, log_prob = tf.nn.ctc_greedy_decoder(inputs=preds_t, sequence_length=self.seq_len_placeholder / 8)
-        return preds, decoded[0]
+        return preds, decoded
     
     def add_loss_op(self, preds):
     	preds = tf.transpose(preds, (1,0,2))
@@ -258,12 +265,12 @@ class LASmodel(Model):
         return losses
 
 def test_LAS_model():
-    train, max_time, max_chars = ld.load_data("data_debug_13500_b1.npz")
+    train, max_time, max_chars = ld.load_data("../data_debug_13500_b1_nml.npz")
     # voxforge/ae-20100821-aov/wav/a0351.wav: IT WAS MORE LIKE SUGAR. using datan.npz
     # voxforge/aaa-20150128-fak/wav/a0557.wav: THE LAST REFUGEE HAD PASSED.
-    inputs=train[0][:8]
-    labels=train[1][:8]
-    seqs=((train[2][:8]-1)/8+1)*8
+    inputs=train[0][:4]
+    labels=train[1][:4]
+    seqs=((train[2][:4]-1)/8+1)*8
     #seqs=train[2][:8]
     #test_inputs=test[0]
     #test_labels=test[1]
@@ -276,7 +283,7 @@ def test_LAS_model():
         saver=tf.train.Saver()
         with tf.Session() as sess:
             sess.run(init)
-            losses = model.fit(saver,sess, inputs[:4], labels[:4],seqs[:4])
+            losses = model.fit(saver,sess, inputs[:3], labels[:3],seqs[:3])
             saver.save(sess, model.config.model_output)
     #"""
     with tf.Graph().as_default():
@@ -299,9 +306,9 @@ def test_LAS_model():
             pred, dec = model.predict_on_batch(session, inputs, labels, seqs)#test_inputs[:10], test_labels[:10], test_seqs[:10])
             duration = time.time() - start_time
             print 'Predictions below: ({:.3f} sec)'.format(duration)
-            print dec
             print pred[0].shape, pred.shape
             np.savez("samples", pred=pred)
+            print dec[0]
             #"""
 
 if __name__ == "__main__":

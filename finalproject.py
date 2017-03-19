@@ -7,19 +7,26 @@ import time
 EOS=28
 num_train=7
 num_dev=2
-all_train=["/mnt/Data/data_resized_8000_b0.npz","/mnt/Data/data_resized_8000_b1.npz",\
-"/mnt/Data/data_resized_8000_b2.npz","/mnt/Data/data_resized_8000_b3.npz",\
-"/mnt/Data/data_resized_8000_b4.npz","/mnt/Data/data_resized_8000_b5.npz",\
-"/mnt/Data/data_resized_8000_b6.npz"]
-all_dev=["/mnt/Data/data_resized_8000_b7.npz","/mnt/Data/data_resized_8000_b8.npz"]
-TEST="/mnt/Data/data_resized_8000_b9.npz"
+DEBUG = False
+all_data_prefix = "/mnt/Data/data_resized_8000_b"
+all_data_suffix = ".npz"
+dbg_data_prefix = "/mnt/Data/data_debug_5000_b"
+dbg_data_suffix = "_nml.npz"
+dbg_train = [dbg_data_prefix+str(i)+dbg_data_suffix for i in range(num_train)]
+fll_train=["/mnt/Data/data_resized_8000_b0.npz","/mnt/Data/data_resized_8000_b1.npz","/mnt/Data/data_resized_8000_b2.npz", \
+	"/mnt/Data/data_resized_8000_b3.npz","/mnt/Data/data_resized_8000_b4.npz","/mnt/Data/data_resized_8000_b5.npz","/mnt/Data/data_resized_8000_b6.npz"]
+dbg_dev = [dbg_data_prefix+str(i)+dbg_data_suffix for i in range(num_train, num_train+num_dev)]
+fll_dev=["/mnt/Data/data_resized_8000_b7.npz","/mnt/Data/data_resized_8000_b8.npz"]
+all_train = dbg_train if DEBUG else fll_train
+all_dev = dbg_dev if DEBUG else fll_dev
+TEST=(dbg_data_prefix + str(9) + dbg_data_suffix) if DEBUG else "/mnt/Data/data_resized_8000_b9.npz"
 
 class Config:#Several +drop out
 	n_classes = 29
-	batch_size = 300
+	batch_size = 800
 	#U = 16   
-	n_mfcc = 200#Must be 4 times pblstm_hidden
-	pblstm_hidden = 50
+	n_mfcc = 80#Must be 4 times pblstm_hidden
+	pblstm_hidden = 20
 	n_features = 40
 	dropout = 0.9
 	aslstm_state =  300
@@ -267,27 +274,34 @@ def  test_LAS_model():
 		init=tf.global_variables_initializer()
 		saver=tf.train.Saver()
 		with tf.Session() as sess:
+			print "[INFO] Building session..."
 			sess.run(init)
+			print "[INFO] Start to train..."
 			for epoch in range (model.config.n_epochs):
+				print "[INFO] Epoch", epoch, "started"
 				start_time=time.time()
 				train_loss=0.0
 				dev_loss=0.0
 				for i in range (num_train):
+					print "[INFO] Loading data file", i
 					ith, _ , foo=ld.load_data(all_train[i])
 					inputs=ith[0].reshape((-1, config.nblocks, config.blockdim))
 					labels=ith[1]
 					seqs=np.ceil(ith[2] / 10.0) * 10.0
 					mask=to_mask(labels,EOS)
+					print "[INFO] Training on data file", i
 					train_loss+=model.run_epoch(sess, inputs, labels,seqs,mask)
 				train_loss=train_loss/num_train	
 				all_train_loss.append(train_loss)
 				#For every epoch, evaluate on development set
-				for i in range (num_dev):	
+				for i in range(num_dev):	
+					print "[INFO] Loading dev file", i
 					dev, _ , foo=ld.load_data(all_dev[i])
 					dev_inputs=dev[0].reshape((-1, config.nblocks, config.blockdim))
 					dev_labels=dev[1]
 					dev_seqs=dev[2]
 					mask_dev=to_mask(dev_labels,EOS)
+					print "[INFO] Testing on dev file", i
 					dev_loss+=model.dev_model(sess,dev_inputs,dev_labels,dev_seqs,mask_dev)
 				dev_loss=dev_loss/num_dev		
 				all_dev_loss.append(dev_loss)

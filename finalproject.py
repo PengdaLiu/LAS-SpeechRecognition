@@ -22,7 +22,7 @@ class Config:#Several +drop out
 	model_output= "model_weights"
 	#max_time = 128
 	#timestep = 82
-	n_epochs = 300
+	n_epochs = 40
 	lr = 4e-3 
 
 	def __init__(self, timestep=82, max_time=128):
@@ -219,16 +219,7 @@ class LASmodel(Model):
 		return losses
 
 def to_mask(data, thresh):
-	m=np.shape(data)[0]
-	n=np.shape(data)[1]
-	mask=np.zeros(np.shape(data))
-	for i in range (m):
-		ind=True
-		for j in range (n):
-			mask[i][j]=ind
-			if data[i][j] == thresh:
-				ind=False
-	return np.bool_(mask)
+    return np.concatenate([np.array([[True]] * data.shape[0]), data[:,:-1]!=thresh], axis=1)
 
 def  test_LAS_model():
 	train, test, max_time, max_chars = ld.load_data("../Data/data_nml.npz", new_format=False)

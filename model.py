@@ -76,11 +76,7 @@ class Model(object):
 		"""
 
 		raise NotImplementedError("Each Model must re-implement this method.")
-
-	def test_model(self,sess,inputs,labels,seq,mask):
-		feed = self.create_feed_dict(inputs, labels, seq,mask)
-		loss = sess.run(self.loss, feed_dict=feed)
-		return loss
+	
 
 	def train_on_batch(self, sess, inputs_batch, labels_batch,seq_batch,mask_batch):
 		"""Perform one step of gradient descent on the provided batch of data.
@@ -92,11 +88,11 @@ class Model(object):
 		Returns:
 			loss: loss over the batch (a scalar)
 		"""
-		feed = self.create_feed_dict(inputs_batch=inputs_batch, labels_batch=labels_batch,seq_batch=seq_batch,mask_batch=mask_batch)
-		_,correct, loss = sess.run([self.train_op, self.correct,self.loss], feed_dict=feed)
-		return correct ,loss
+		feed = self.create_feed_dict(inputs_batch=inputs_batch, labels_batch=labels_batch,seq_batch=seq_batch,mask_batch=mask_batch, dropout = self.config.dropout)
+		_,loss = sess.run([self.train_op,self.loss], feed_dict=feed)
+		return loss
 
-	def predict_on_batch(self, sess, inputs_batch):
+	def test_on_batch(self, sess, inputs_batch,labels_batch,seq_batch,mask_batch):
 		"""Make predictions for the provided batch of data
 
 		Args:
@@ -105,9 +101,22 @@ class Model(object):
 		Returns:
 			predictions: np.ndarray of shape (n_samples, n_classes)
 		"""
-		feed = self.create_feed_dict(inputs_batch)
-		predictions = sess.run(self.pred, feed_dict=feed)
-		return predictions
+		feed = self.create_feed_dict(inputs_batch,labels_batch,seq_batch,mask_batch)
+		loss ,correct= sess.run([self.loss,self.correct], feed_dict=feed)
+		return loss,correct
+	
+	def loss_on_batch(self, sess, inputs_batch,labels_batch,seq_batch,mask_batch):
+		"""Make predictions for the provided batch of data
+
+		Args:
+			sess: tf.Session()
+			input_batch: np.ndarray of shape (n_samples, n_features)
+		Returns:
+			predictions: np.ndarray of shape (n_samples, n_classes)
+		"""
+		feed = self.create_feed_dict(inputs_batch,labels_batch,seq_batch,mask_batch)
+		loss = sess.run(self.loss, feed_dict=feed)
+		return loss
 
 	def build(self):
 		self.add_placeholders()

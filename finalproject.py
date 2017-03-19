@@ -4,31 +4,42 @@ import numpy as np
 from utils.general_utils import get_minibatches
 import load_data as ld
 import time
-
-EOS = 32
+EOS=28
+num_train=7
+num_dev=2
+all_train=["/mnt/Data/data_resized_8000_b0.npz","/mnt/Data/data_resized_8000_b1.npz",\
+"/mnt/Data/data_resized_8000_b2.npz","/mnt/Data/data_resized_8000_b3.npz",\
+"/mnt/Data/data_resized_8000_b4.npz","/mnt/Data/data_resized_8000_b5.npz",\
+"/mnt/Data/data_resized_8000_b6.npz"]
+all_dev=["/mnt/Data/data_resized_8000_b7.npz","/mnt/Data/data_resized_8000_b8.npz"]
+TEST="/mnt/Data/data_resized_8000_b9.npz"
 
 class Config:#Several +drop out
-	n_classes = 33
-	batch_size = 100
+	n_classes = 29
+	batch_size = 300
 	#U = 16   
-	n_mfcc = 60#Must be 4 times pblstm_hidden
-	pblstm_hidden = 15
+	n_mfcc = 200#Must be 4 times pblstm_hidden
+	pblstm_hidden = 50
 	n_features = 40
-	aslstm_state =  100
-	hidden_atten1 = 100
+	dropout = 0.9
+	aslstm_state =  300
+	hidden_atten1 = 500
 	hidden_atten2 = 100
 	hidden_dist= 100
-	context_final = 100
+	context_final = 200
 	model_output= "model_weights"
 	#max_time = 128
 	#timestep = 82
-	n_epochs = 100
+	n_epochs =100
+	blocksz = 10
 	lr = 1e-3 
 
 	def __init__(self, timestep=82, max_time=128):
-		self.timestep=timestep
-		self.max_time=max_time
-		self.U=max_time/8
+		self.timestep = timestep
+		self.max_time = max_time
+		self.blockdim = self.n_features * self.blocksz
+		self.nblocks = max_time / self.blocksz
+		self.U = self.nblocks / 8
 
 class LASmodel(Model):
 	def mlp(self,s,w1,b1,w2,b2):
@@ -58,13 +69,14 @@ class LASmodel(Model):
 
 	def add_placeholders(self):
 		self.input_placeholder = tf.placeholder(tf.float32	, \
-			shape=[None, self.config.max_time, self.config.n_features])
+			shape=[None, self.config.nblocks, self.config.blockdim])
 		self.labels_placeholder =tf.placeholder(tf.int32, shape=[None, self.config.timestep])
 		self.seq_len_placeholder = tf.placeholder(tf.int32, shape=[None,])
 		self.mask_placeholder=tf.placeholder(tf.bool,shape=[None,self.config.timestep])
+		self.dropout_placeholder =tf.placeholder(tf.float32)
 
-	def create_feed_dict(self, inputs_batch, labels_batch=None,seq_batch=None,mask_batch=None):
-		feed_dict={self.input_placeholder:inputs_batch, self.labels_placeholder:labels_batch,self.seq_len_placeholder:seq_batch,self.mask_placeholder : mask_batch}
+	def create_feed_dict(self, inputs_batch, labels_batch=None,seq_batch=None,mask_batch=None,dropout=1):
+		feed_dict={self.input_placeholder:inputs_batch, self.labels_placeholder:labels_batch,self.seq_len_placeholder:seq_batch,self.mask_placeholder : mask_batch, self.dropout_placeholder:dropout}
 		return feed_dict
 
 	def attentioncontext(self,si,h,w1,b1,w2,b2,w11,b11,w22,b22):
@@ -97,7 +109,7 @@ class LASmodel(Model):
 		b2_dist=tf.Variable(tf.zeros([ self.config.n_classes, ]))
 
 		hidden_size=self.config.pblstm_hidden
-		max_time=self.config.max_time
+		max_time=self.config.nblocks
 		fcell_l1 = tf.nn.rnn_cell.LSTMCell(hidden_size)
 		bcell_l1 = tf.nn.rnn_cell.LSTMCell(hidden_size)
 
@@ -122,16 +134,16 @@ class LASmodel(Model):
 		# concat'ed outputs_l3
 		h= tf.reshape(tf.concat(2, outputs_l3), [-1, max_time / 8, hidden_size * 4])
 		initial_s = output = tf.zeros([tf.shape(self.input_placeholder)[0],self.config.aslstm_state], tf.float32)
-		c=self.attentioncontext(output,h,w1_atten,b1_atten,w2_atten,b2_atten,w11_atten,b11_atten,w22_atten,b22_atten)
-		
+		c=self.attentioncontext(output,h,w1_atten,b1_atten,w2_atten,b2_atten,w11_atten,b11_atten,w22_atten,b22_atten)		
 		for i in range(self.config.timestep-1):
-			if i > 0: tf.get_variable_scope().reuse_variables()
-			r=np.random.binomial(1,0.9)
+			if i>0:
+				tf.get_variable_scope().reuse_variables()
+			r=np.random.binomial(1,0.1)
 			r=tf.constant(r,dtype=tf.float32)
-			r=0
 			random_sample=tf.reshape(tf.nn.softmax(preds[i]),[-1,self.config.n_classes])*r+(1-r)*tf.one_hot(self.labels_placeholder[:,i], self.config.n_classes, axis=-1,dtype=tf.float32)
 			concatenated=tf.concat(1,[random_sample,c]) 
 			output, state = stacked_lstm(concatenated, state)
+			output=tf.nn.dropout(output,self.dropout_placeholder)
 			c = self.attentioncontext(output, h, w1_atten,b1_atten,w2_atten,b2_atten,w11_atten,b11_atten,w22_atten,b22_atten)
 			ith_pred=tf.reshape(self.chadist(output,c,w1_dist,b1_dist,w2_dist,b2_dist),[-1,self.config.n_classes])
 			preds.append(ith_pred)
@@ -174,6 +186,7 @@ class LASmodel(Model):
 		self.config=config
 		self.build()
 	
+	
 	def run_epoch(self, sess, inputs, labels,seqs,mask):
 		"""Runs an epoch of training.
 
@@ -184,20 +197,30 @@ class LASmodel(Model):
 		Returns:
 			average_loss: scalar. Average minibatch loss of model on epoch.
 		"""
-		correct,n_minibatches, total_loss = 0.0,0.0,0.0
+		n_minibatches, total_loss = 0.0,0.0
 		for input_batch, labels_batch ,seq_batch ,mask_batch in get_minibatches([inputs, labels,seqs,mask], self.config.batch_size):
 			n_minibatches += 1
-			batchcorrect,batchloss= self.train_on_batch(sess, input_batch, labels_batch,seq_batch,mask_batch)
+			batchloss= self.train_on_batch(sess, input_batch, labels_batch,seq_batch,mask_batch)
 			total_loss+=batchloss
-			correct+=batchcorrect
-		return total_loss / n_minibatches, correct/n_minibatches
+		return total_loss / n_minibatches
 
+	def dev_model(self,sess,inputs,labels,seqs,mask):
+		n_minibatches, total_loss = 0.0,0.0
+		for input_batch, labels_batch ,seq_batch ,mask_batch in get_minibatches([inputs, labels,seqs,mask], self.config.batch_size):
+			n_minibatches += 1
+			batchloss= self.loss_on_batch(sess, input_batch, labels_batch,seq_batch,mask_batch)
+			total_loss+=batchloss
+		return total_loss / n_minibatches
 
-
-
-	def run_test(self,sess,inputs,labels,seqs,mask):
-		return self.test_model(sess,inputs,labels,seqs,mask)
-
+	def test_model(self,sess,inputs,labels,seqs,mask):
+		n_minibatches, total_loss,total_correct = 0.0,0.0,0.0
+		for input_batch, labels_batch ,seq_batch ,mask_batch in get_minibatches([inputs, labels,seqs,mask], self.config.batch_size):
+			n_minibatches += 1
+			batchloss,batchcorrect= self.test_on_batch(sess, input_batch, labels_batch,seq_batch,mask_batch)
+			total_loss+=batchloss
+			total_correct+=batchcorrect
+		return total_loss / n_minibatches ,total_correct/n_minibatches
+	
 
 	def fit(self, saver,sess, inputs, labels,seqs,mask):
 		"""Fit model on provided data.
@@ -219,6 +242,8 @@ class LASmodel(Model):
 		return losses
 
 def to_mask(data, thresh):
+	return np.concatenate([np.array([[True]]*data.shape[0]),data[:,:-1]!=thresh],axis=1)
+	"""
 	m=np.shape(data)[0]
 	n=np.shape(data)[1]
 	mask=np.zeros(np.shape(data))
@@ -229,39 +254,83 @@ def to_mask(data, thresh):
 			if data[i][j] == thresh:
 				ind=False
 	return np.bool_(mask)
+	"""
 
 def  test_LAS_model():
-	train, test, max_time, max_chars = ld.load_data("../Data/data_nml.npz", new_format=False)
-	inputs=train[0]
-	labels=train[1]
-	mask_train=to_mask(labels,EOS)
-	seqs=train[2]
-	test_inputs=test[0]
-	test_labels=test[1]
-	test_seqs=test[2]##For loop tune hyper
-	mask_test=to_mask(test_labels,EOS)
+	start,max_time,max_chars=ld.load_data("/mnt/Data/data_resized_8000_b0.npz")
 	config=Config(max_time = max_time, timestep = max_chars + 2)
+	all_train_loss=[]
+	all_dev_loss=[]
+	min_loss=0.0
 	with tf.Graph().as_default():
-		model = LASmodel(config)
-		init = tf.global_variables_initializer()
+		model=LASmodel(config)
+		init=tf.global_variables_initializer()
 		saver=tf.train.Saver()
 		with tf.Session() as sess:
 			sess.run(init)
-			losses = model.fit(saver,sess, inputs, labels,seqs,mask_train)
-			saver.save(sess, model.config.model_output)
-	with tf.Graph().as_default():
-		model=LASmodel(config)
-		saver = tf.train.Saver()
-		with tf.Session() as session:
-			init = tf.global_variables_initializer()
-			session.run(init)
-			new_saver = tf.train.import_meta_graph(model.config.model_output+'.meta')
-			new_saver.restore(session, tf.train.latest_checkpoint('./'))
-			loss= model.run_test(session,test_inputs,test_labels,test_seqs,mask_test)
-	 		print "Test loss:"
-	 		print loss
+			for epoch in range (model.config.n_epochs):
+				start_time=time.time()
+				train_loss=0.0
+				dev_loss=0.0
+				for i in range (num_train):
+					ith, _ , foo=ld.load_data(all_train[i])
+					inputs=ith[0].reshape((-1, config.nblocks, config.blockdim))
+					labels=ith[1]
+					seqs=np.ceil(ith[2] / 10.0) * 10.0
+					mask=to_mask(labels,EOS)
+					train_loss+=model.run_epoch(sess, inputs, labels,seqs,mask)
+				train_loss=train_loss/num_train	
+				all_train_loss.append(train_loss)
+				#For every epoch, evaluate on development set
+				for i in range (num_dev):	
+					dev, _ , foo=ld.load_data(all_dev[i])
+					dev_inputs=dev[0].reshape((-1, config.nblocks, config.blockdim))
+					dev_labels=dev[1]
+					dev_seqs=dev[2]
+					mask_dev=to_mask(dev_labels,EOS)
+					dev_loss+=model.dev_model(sess,dev_inputs,dev_labels,dev_seqs,mask_dev)
+				dev_loss=dev_loss/num_dev		
+				all_dev_loss.append(dev_loss)
+				if epoch ==0:
+					min_loss=dev_loss
+					saver.save(sess,model.config.model_output)
+				if epoch > 1:
+					if dev_loss < min_loss:
+						saver.save(sess,model.config.model_output)		
+				duration=time.time()-start_time
+				print 'Epoch {:}: train loss = {:.2f} dev loss={:.2f} ({:.3f} sec)'.format(epoch, train_loss,dev_loss ,duration)
+		all_train_loss=np.array(all_train_loss)
+		all_dev_loss=np.array(all_dev_loss)
+		curve=np.zeros((2,config.n_epochs))
+		curve[0]=all_train_loss
+		curve[1]=all_dev_loss
+		np.save("curve", curve, allow_pickle=True, fix_imports=True)
 
+		##Evaluate on test set
+		with tf.Session() as sess_test:
+			test,_,foo=ld.load_data(TEST)
+			test_inputs=test[0].reshape((-1, config.nblocks, config.blockdim))
+			test_labels=test[1]
+			test_seqs=test[2]
+			test_mask=to_mask(test_labels,EOS)
+			init=tf.global_variables_initializer()
+			sess_test.run(init)
+			test_saver= tf.train.import_meta_graph(model.config.model_output+'.meta')
+			test_saver.restore(sess_test, tf.train.latest_checkpoint('./'))			
+			test_loss,test_correct=model.test_model(sess_test,test_inputs,test_labels,test_seqs,test_mask)
+			print 'Test loss:{:.2f}, Test accuracy={:.3f}'.format(test_loss,test_correct)
 
 if __name__ == "__main__":
 	test_LAS_model()
+
+
+
+
+
+
+
+
+
+
+
 

@@ -1,7 +1,6 @@
 import os, sys
 import numpy as np
 import random
-import scipy.io.wavfile as wav
 
 CODE = {'A': 1, 'C': 3, 'B': 2, 'E': 5, 'D': 4, 'G': 7, 'F': 6, 'I': 9, 'H': 8, 'K': 11, 'J': 10, 'M': 13, \
         'L': 12, 'O': 15, 'N': 14, 'Q': 17, 'P': 16, 'S': 19, 'R': 18, 'U': 21, 'T': 20, 'W': 23, 'V': 22, \
@@ -27,13 +26,42 @@ def nml_data(f, old_format=False):
         tsl=dt["test_labels"]
         tss=dt["test_seq_len"]
         np.savez(f[:-4]+"_nml"+f[-4:], train_data=nml(trd, trs), train_labels=trl, train_seq_len=trs, \
-                test_data=nml(tsd, tss), test_labels=trl, test_seq_len=tss, \
+                test_data=nml(tsd, tss), test_labels=tsl, test_seq_len=tss, \
                 max_time=mt, max_chars=mc)
         return
     trl[trl==32]=28
     np.savez(f[:-4]+"_nml"+f[-4:], train_data=nml(trd, trs), train_labels=trl, train_seq_len=trs, \
             max_time=mt, max_chars=mc)
 
+def resize(fs=["data_b0_nml.npz", "data_b1_nml.npz", "data_b2_nml.npz", "data_b3_nml.npz", "data_b4_nml.npz", "data_b5_nml.npz", "data_b6_nml.npz"], sz=8000, start=0):
+    batch_no = start
+    t1d, t1l, t1s, mt, mc = (None, None, None, None, None)
+    for f in fs:
+        d1 = np.load(f)
+        if batch_no == start:
+            t1d = d1['train_data']
+            t1l = d1['train_labels']
+            t1s = d1['train_seq_len']
+            mt = d1['max_time']
+            mc = d1['max_chars']
+        else:
+            t1d = np.concatenate([t1d, d1['train_data']], axis=0)
+            t1l = np.concatenate([t1l, d1['train_labels']], axis=0)
+            t1s = np.concatenate([t1s, d1['train_seq_len']], axis=0)
+        del d1
+        while len(t1d) > sz:
+            np.savez("data_resized_"+str(sz)+"_b"+str(batch_no), \
+                    train_data=t1d[:sz], train_labels=t1l[:sz], train_seq_len=t1s[:sz], \
+                    max_time=mt, max_chars=mc)
+            print "[INFO] Done writing", sz, "samples to file", "data_resized_"+str(sz)+"_b"+str(batch_no)+".npz"
+            t1d = t1d[sz:]
+            t1l = t1l[sz:]
+            t1s = t1s[sz:]
+            batch_no += 1
+    if len(t1d) > 0:
+        np.savez("data_resized_"+str(sz)+"_b"+str(batch_no)+".npz", \
+                train_data=t1d, train_labels=t1l, train_seq_len=t1s, max_time=mt, max_chars=mc)
+        print "[INFO] Done writing", len(t1d), "samples to file", "data_resized_"+str(sz)+"_b"+str(batch_no)+".npz"
 
 def shuffle_data(f1="data_b0.npz", f2="data_b7.npz"):
     print "[INFO] Loading data ..."
@@ -83,7 +111,8 @@ def load_data(file="data.npz", new_format=True):
     return (train_data, train_labels, train_seq_len), (test_data, test_labels, test_seq_len), max_time, max_chars
 
 def build_data(vf_path="./voxforge/", timit_path="./timit/", n_mfcc=40, \
-        debug=False, ret=False, N_TRAINS_LIM_DBG=200):
+        debug=False, ret=False, N_TRAINS_LIM_DBG=200, batch_size=10000):
+    import scipy.io.wavfile as wav
     import librosa
     """load train and test data
 
@@ -116,7 +145,6 @@ def build_data(vf_path="./voxforge/", timit_path="./timit/", n_mfcc=40, \
     max_chars = 98
     min_chars = 5
     n_trains = 0
-    batch_size = 12000
     batch_no = 0
 
     def write_data(train, batch_no, debug, max_time, n_mfcc, N_TRAINS_LIM_DBG):
@@ -133,10 +161,12 @@ def build_data(vf_path="./voxforge/", timit_path="./timit/", n_mfcc=40, \
                     axis=0)
         print "[INFO] Done generating labels"
         train_seq_len = [t[2] for t in train]
-        np.savez(("data_debug_" + str(N_TRAINS_LIM_DBG) if debug else "data") + "_b" + str(batch_no), \
+        np.savez(("data_debug_" + str(N_TRAINS_LIM_DBG) if debug else "data_full_") + "_b" + str(batch_no), \
                 train_data=train_data, train_labels=train_label, train_seq_len=train_seq_len, \
                 max_time=max_time, max_chars=max_chars)
         print "[INFO] Done writing data file " + ("data_debug_" + str(N_TRAINS_LIM_DBG) if debug else "data") + "_b" + str(batch_no) + ".npz"
+        nml_data(("data_debug_" + str(N_TRAINS_LIM_DBG) if debug else "data_full_") + "_b" + str(batch_no) + ".npz")
+        print "[INFO] Done normalizing new data"
 
     print "[INFO] Loading TIMIT data from", train_dir
     # load timit data
@@ -148,6 +178,7 @@ def build_data(vf_path="./voxforge/", timit_path="./timit/", n_mfcc=40, \
             if debug and n_trains >= N_TRAINS_LIM_DBG / 2: break
             for cln_wav in filter(lambda s : s[-5:] == "C.wav", \
                     os.listdir(train_dir + d_l1 + '/' + d_l2 + '/'), ):
+                if debug and n_trains >= N_TRAINS_LIM_DBG / 2: break
                 if not os.path.isfile(train_dir + d_l1 + '/' + d_l2 + '/' + cln_wav[:-5] + ".txt"):
                     continue
                 rate, sig = wav.read(train_dir + d_l1 + '/' + d_l2 + '/' + cln_wav)
@@ -163,10 +194,10 @@ def build_data(vf_path="./voxforge/", timit_path="./timit/", n_mfcc=40, \
                 n_trains += 1
                 if n_trains % 1000 == 0:
                     print "    Read", n_trains, "data ..."
-                    if n_trains % batch_size == 0:
-                        write_data(train, batch_no, debug, max_time, n_mfcc, N_TRAINS_LIM_DBG)
-                        batch_no += 1
-                        train = []
+                if n_trains % batch_size == 0:
+                    write_data(train, batch_no, debug, max_time, n_mfcc, N_TRAINS_LIM_DBG)
+                    batch_no += 1
+                    train = []
     print "[INFO] Done loading", n_trains, "training data"
 
     print "[INFO] Loading VoxForge data from", vf_path
@@ -192,10 +223,10 @@ def build_data(vf_path="./voxforge/", timit_path="./timit/", n_mfcc=40, \
             n_trains += 1
             if n_trains % 1000 == 0:
                 print "    Read", n_trains, "data ..."
-                if n_trains % batch_size == 0:
-                    write_data(train, batch_no, debug, max_time, n_mfcc, N_TRAINS_LIM_DBG)
-                    batch_no += 1
-                    train = []
+            if n_trains % batch_size == 0:
+                write_data(train, batch_no, debug, max_time, n_mfcc, N_TRAINS_LIM_DBG)
+                batch_no += 1
+                train = []
 
     if n_trains % batch_size != 0:
         write_data(train, batch_no, debug, max_time, n_mfcc, N_TRAINS_LIM_DBG)
